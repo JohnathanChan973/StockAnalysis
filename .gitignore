@@ -1,1 +1,7 @@
+<<<<<<< HEAD
+=======
+.venv
+stocks_analysis.log
+stocks.db
+>>>>>>> 64affb7 (Added project files)
 __pycache__/
