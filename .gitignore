@@ -1,7 +1,7 @@
-<<<<<<< HEAD
-=======
 .venv
 stocks_analysis.log
 stocks.db
->>>>>>> 64affb7 (Added project files)
+*.csv
+*.xlsx
+*.xls
 __pycache__/
