@@ -26,3 +26,11 @@ def tickers_to_csv(func):
     df = pd.DataFrame(tickers, columns=["Ticker"])  # Convert the list to a DataFrame
     current_date = datetime.datetime.now().strftime(r"%Y-%m-%d")
     df.to_csv(f"{func.__name__[4:]}_{current_date}.csv", index=False)  # Save DataFrame to CSV
+
+def main():
+    # tickers = get_russell2000()
+    tickers = get_sp500()
+    print(tickers)
+
+if __name__ == "__main__":
+    main()
