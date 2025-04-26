@@ -1,43 +1,50 @@
 import logging
-from itertools import islice, repeat
+import time
+from itertools import islice
 from concurrent.futures import ThreadPoolExecutor
 from stocks_db import Stocks_DB
-from analysis import check_stock
+import analysis
 import tickers
 from tqdm import tqdm
-import time
 
 # Set up logging
 logging.basicConfig(
     filename="stocks_analysis.log",
+    filemode="w",
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger()
 
-# Wrapper that logs any exceptions
-def check_stock_safe(ticker):
+# Wrapper that logs any exceptions and returns (ticker, success)
+def check_stock(ticker, func):
     try:
-        result = check_stock(ticker)
+        result = func(ticker)
         if result:
             logger.info(f"✅ Success: {ticker}")
-        return True
+        return (ticker, True)
     except Exception as e:
         logger.error(f"❌ Failed: {ticker} — {e}")
-        return False
+        return (ticker, False)
 
+# Splits an iterable into chunks
 def batch_iterator(iterable, size):
     iterator = iter(iterable)
     for first in iterator:
         yield [first] + list(islice(iterator, size - 1))
 
-def run_batches(tickers, batch_size=20, max_workers=10, max_retries=2):
+# Main batch execution with retries
+def run_batches(tickers, func=analysis.stock_metadata, batch_size=20, max_workers=10, max_retries=2):
     failed_tickers = []
 
     for batch_num, batch in enumerate(tqdm(batch_iterator(tickers, batch_size), desc="Batch Progress")):
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            results = list(tqdm(executor.map(check_stock_safe, batch), total=len(batch), desc=f"Tickers in Batch {batch_num+1}"))
-        failed_tickers.extend([ticker for ticker, success in zip(batch, results) if not success])
+            results = list(tqdm(
+                executor.map(lambda ticker: check_stock(ticker, func), batch),
+                total=len(batch),
+                desc=f"Tickers in Batch {batch_num + 1}"
+            ))
+        failed_tickers.extend([ticker for ticker, success in results if not success])
 
     # Retry logic
     for retry in range(1, max_retries + 1):
@@ -45,14 +52,18 @@ def run_batches(tickers, batch_size=20, max_workers=10, max_retries=2):
             break
 
         logger.info(f"🔁 Retry attempt {retry} for {len(failed_tickers)} failed tickers.")
-        time.sleep(1)  # optional pause between retries
+        time.sleep(1)
 
         retry_failed = []
         for batch in batch_iterator(failed_tickers, batch_size):
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                results = list(tqdm(executor.map(check_stock_safe, batch), total=len(batch), desc=f"Retry {retry}"))
-            retry_failed.extend([ticker for ticker, success in zip(batch, results) if not success])
-        
+                results = list(tqdm(
+                    executor.map(lambda ticker: check_stock(ticker, func), batch),
+                    total=len(batch),
+                    desc=f"Retry {retry}"
+                ))
+            retry_failed.extend([ticker for ticker, success in results if not success])
+
         failed_tickers = retry_failed
 
     if failed_tickers:
@@ -60,19 +71,20 @@ def run_batches(tickers, batch_size=20, max_workers=10, max_retries=2):
     else:
         logger.info("✅ All tickers processed successfully after retries.")
 
+# Testbed main
 def main():
-    db = Stocks_DB()
-    db.setup_database()
+    #db = Stocks_DB()
+    #db.setup_database()
 
-    # Replace with your real list of tickers
-    # tickers = get_sp500_tickers()
-    analyze_tickers = tickers.get_russell2000()
+    # analyze_tickers = tickers.get_russell2000()
+    analyze_tickers = ["AAPL", "TSLA"]
+    run_batches(analyze_tickers, func=analysis.golden_cross)
 
-    run_batches(analyze_tickers)
-
+    # Optional: save snapshot
     # df = db.to_pd_df()
     # df.to_csv("stocks_db_snapshot.csv", index=False)
-    db.db_close()
+    #print(db.get_table_names())
+    #db.db_close()
 
 if __name__ == "__main__":
     main()
