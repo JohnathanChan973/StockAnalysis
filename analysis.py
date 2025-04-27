@@ -1,11 +1,28 @@
 import yfinance as yf
 import datetime as datetime
 from stocks_db import Stocks_DB
+import logging
+import time
+from itertools import islice
+from concurrent.futures import ThreadPoolExecutor
+from stocks_db import Stocks_DB
+from tqdm import tqdm
+import matplotlib.pyplot as plt
+import pandas as pd
 
-def setup(ticker):
+# Set up logging
+logging.basicConfig(
+    filename="stocks_analysis.log",
+    filemode="w",
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger()
+
+def setup(ticker, period="1y"):
     db = Stocks_DB()  # Create a new DB connection in this thread
     stock = yf.Ticker(ticker)
-    df = stock.history(period="1y")
+    df = stock.history(period=period).reset_index()
     return db, df
 
 def moving_avg(df, days : int):
@@ -43,7 +60,7 @@ def minervini(ticker):
         "sma_uptrend": bool(sma_uptrend),
         "near_high": bool(near_52_week_high),
         "date_checked": datetime.datetime.now().date(),
-        "last_price_date": df.index[-1].date()
+        "last_price_date": df['Date'].iloc[-1].date()
     }
 
     # print(stock_data)
@@ -77,7 +94,7 @@ def golden_cross(ticker, long_avg=200, short_avg=50):
         "moving_avg_200": current_sma200, 
         "recent_uptrend": bool(sma50_beating_sma200),
         "date_checked": datetime.datetime.now().date(),
-        "last_price_date": df.index[-1].date()
+        "last_price_date": df['Date'].iloc[-1].date()
     }
 
     # print(golden_cross_data)
@@ -105,15 +122,128 @@ def stock_metadata(ticker):
     
     return metadata
 
+# Wrapper that logs any exceptions and returns (ticker, success)
+def check_stock(ticker, func):
+    try:
+        result = func(ticker)
+        if result:
+            logger.info(f"✅ Success: {ticker}")
+        return (ticker, True)
+    except Exception as e:
+        logger.error(f"❌ Failed: {ticker} — {e}")
+        return (ticker, False)
+
+# Splits an iterable into chunks
+def batch_iterator(iterable, size):
+    iterator = iter(iterable)
+    for first in iterator:
+        yield [first] + list(islice(iterator, size - 1))
+
+# Main batch execution with retries
+def run_batches(tickers, func=stock_metadata, batch_size=20, max_workers=10, max_retries=2):
+    failed_tickers = []
+
+    for batch_num, batch in enumerate(tqdm(batch_iterator(tickers, batch_size), desc="Batch Progress")):
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            results = list(tqdm(
+                executor.map(lambda ticker: check_stock(ticker, func), batch),
+                total=len(batch),
+                desc=f"Tickers in Batch {batch_num + 1}"
+            ))
+        failed_tickers.extend([ticker for ticker, success in results if not success])
+
+    # Retry logic
+    for retry in range(1, max_retries + 1):
+        if not failed_tickers:
+            break
+
+        logger.info(f"🔁 Retry attempt {retry} for {len(failed_tickers)} failed tickers.")
+        time.sleep(1)
+
+        retry_failed = []
+        for batch in batch_iterator(failed_tickers, batch_size):
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                results = list(tqdm(
+                    executor.map(lambda ticker: check_stock(ticker, func), batch),
+                    total=len(batch),
+                    desc=f"Retry {retry}"
+                ))
+            retry_failed.extend([ticker for ticker, success in results if not success])
+
+        failed_tickers = retry_failed
+
+    if failed_tickers:
+        logger.warning(f"⚠️ Final failed tickers: {failed_tickers}")
+    else:
+        logger.info("✅ All tickers processed successfully after retries.")
+
+def vix():
+    # Function to fetch and prepare data for a given ticker
+    def fetch_and_process_data(ticker, rename_column):
+        df = yf.Ticker(ticker).history(period="1y").reset_index()
+        df = df[['Date', 'Close']]  # Select specific columns
+        df = df.rename(columns={'Close': rename_column})  # Rename columns
+        df['Date'] = df['Date'].dt.date  # Convert Date columns to datetime.date
+        return df
+
+    def fetch_data_concurrently():
+        # Use ThreadPoolExecutor to run fetch_and_process_data concurrently for each ticker
+        with ThreadPoolExecutor() as executor:
+            results = list(executor.map(lambda x: fetch_and_process_data(*x), 
+                                        [("^VIX", 'VIX_Close'), ("^VIX3M", 'VIX3M_Close'), ("^GSPC", 'SP500_close')]))
+        
+        # Unpack the results
+        df_1m, df_3m, df_sp500 = results
+
+        # Merge the DataFrames
+        df = df_1m.merge(df_3m, on='Date', how='inner').merge(df_sp500, on='Date', how='inner')
+
+        # Add the difference column
+        df["difference"] = df["VIX_Close"] - df["VIX3M_Close"]
+        
+        return df
+    df = fetch_data_concurrently()
+    # Create subplots (2 rows, 1 column)
+    fig, axes = plt.subplots(nrows=2, ncols=1, figsize=(10, 8))
+
+    # Plot the first graph (VIX Close)
+    axes[0].plot(df["Date"], df["SP500_close"], color='red')
+    axes[0].set_xlabel('Date')
+    axes[0].set_ylabel('S&P 500')
+    axes[0].set_title('S&P 500 over time')
+
+    # Plot the second graph (VIX 3M Close)
+    axes[1].bar(df["Date"], df["difference"], color='blue')
+    axes[1].set_xlabel('Date')
+    axes[1].set_ylabel('VIX 1M - VIX 3M')
+    axes[1].set_title('VIX 1M - VIX 3M over time')
+
+    # Show the plots
+    plt.tight_layout()  # Adjusts the spacing between subplots to avoid overlap
+    plt.show()
+
 def main():
     # Run the function for a list of tickers using multithreading
-    tickers = ["AAPL", "MSFT", "GOOGL", "TSLA"]
+    # tickers = ["AAPL", "MSFT", "GOOGL", "TSLA"]
     # tickers = get_sp500_tickers()
     # with ThreadPoolExecutor() as executor:
     #   executor.map(check_stock, tickers)
     # print(get_russell_2000())
     # print(golden_cross(tickers[0]))
     # print(stock_metadata(tickers[0]))
+    vix()
+    #db = Stocks_DB()
+    #db.setup_database()
+
+    # analyze_tickers = tickers.get_russell2000()
+    #analyze_tickers = ["AAPL", "TSLA"]
+    #run_batches(analyze_tickers, func=golden_cross)
+
+    # Optional: save snapshot
+    # df = db.to_pd_df()
+    # df.to_csv("stocks_db_snapshot.csv", index=False)
+    #print(db.get_table_names())
+    #db.db_close()
 
 if __name__ == "__main__":
     main()
