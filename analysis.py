@@ -8,7 +8,6 @@ from concurrent.futures import ThreadPoolExecutor
 from stocks_db import Stocks_DB
 from tqdm import tqdm
 import matplotlib.pyplot as plt
-import pandas as pd
 
 # Set up logging
 logging.basicConfig(
@@ -178,48 +177,43 @@ def run_batches(tickers, func=stock_metadata, batch_size=20, max_workers=10, max
         logger.info("✅ All tickers processed successfully after retries.")
 
 def vix():
-    # Function to fetch and prepare data for a given ticker
-    def fetch_and_process_data(ticker, rename_column):
-        df = yf.Ticker(ticker).history(period="1y").reset_index()
-        df = df[['Date', 'Close']]  # Select specific columns
-        df = df.rename(columns={'Close': rename_column})  # Rename columns
-        df['Date'] = df['Date'].dt.date  # Convert Date columns to datetime.date
-        return df
+    tickers = ["^VIX", "^VIX3M", "^GSPC"]
+    rename_map = {"^VIX": "VIX_Close", "^VIX3M": "VIX3M_Close", "^GSPC": "SP500_close"}
 
-    def fetch_data_concurrently():
-        # Use ThreadPoolExecutor to run fetch_and_process_data concurrently for each ticker
-        with ThreadPoolExecutor() as executor:
-            results = list(executor.map(lambda x: fetch_and_process_data(*x), 
-                                        [("^VIX", 'VIX_Close'), ("^VIX3M", 'VIX3M_Close'), ("^GSPC", 'SP500_close')]))
-        
-        # Unpack the results
-        df_1m, df_3m, df_sp500 = results
+    # Fetch data for all tickers in one call
+    df = yf.download(tickers, period="1y", auto_adjust=False)['Close']
 
-        # Merge the DataFrames
-        df = df_1m.merge(df_3m, on='Date', how='inner').merge(df_sp500, on='Date', how='inner')
+    logger.info(f"✅ Success: Got important S&P Info")
+    
+    # Rename columns for clarity
+    df = df.rename(columns=rename_map)
 
-        # Add the difference column
-        df["difference"] = df["VIX_Close"] - df["VIX3M_Close"]
-        
-        return df
-    df = fetch_data_concurrently()
+    # Drop rows with missing values (e.g., from different trading calendars)
+    df = df.dropna()
+
+    # Reset index and convert Date column
+    df = df.reset_index()
+    df['Date'] = df['Date'].dt.date
+
+    # Compute the difference between VIX and VIX3M
+    df["difference"] = df["VIX_Close"] - df["VIX3M_Close"]
+
     # Create subplots (2 rows, 1 column)
     fig, axes = plt.subplots(nrows=2, ncols=1, figsize=(10, 8))
 
-    # Plot the first graph (VIX Close)
+    # Plot the S&P 500
     axes[0].plot(df["Date"], df["SP500_close"], color='red')
     axes[0].set_xlabel('Date')
     axes[0].set_ylabel('S&P 500')
     axes[0].set_title('S&P 500 over time')
 
-    # Plot the second graph (VIX 3M Close)
+    # Plot the VIX difference
     axes[1].bar(df["Date"], df["difference"], color='blue')
     axes[1].set_xlabel('Date')
     axes[1].set_ylabel('VIX 1M - VIX 3M')
     axes[1].set_title('VIX 1M - VIX 3M over time')
 
-    # Show the plots
-    plt.tight_layout()  # Adjusts the spacing between subplots to avoid overlap
+    plt.tight_layout()
     plt.show()
 
 def main():
