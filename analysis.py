@@ -1,4 +1,5 @@
 import yfinance as yf
+import pandas as pd
 import datetime as datetime
 from stocks_db import Stocks_DB
 import logging
@@ -8,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from stocks_db import Stocks_DB
 from tqdm import tqdm
 import matplotlib.pyplot as plt
+import tickers
 
 # Set up logging
 logging.basicConfig(
@@ -216,6 +218,108 @@ def vix():
     plt.tight_layout()
     plt.show()
 
+def calculate_stocks_above_ma(period="1y", ma_days=20, sample_size=None):
+    """
+    Calculate percentage of S&P 500 stocks above their moving average over time
+    
+    Args:
+        period: Time period to analyze (e.g., "1y", "6mo", "3mo")
+        ma_days: Moving average period in days
+        sample_size: Optional number of stocks to sample (for testing)
+    
+    Returns:
+        DataFrame with dates and percentage of stocks above MA
+    """
+    # Get S&P 500 tickers
+    sp500_tickers = tickers.get_sp500()
+    
+    # For testing with smaller sample
+    if sample_size:
+        sp500_tickers = sp500_tickers[:sample_size]
+    
+    # Initialize dictionary to store daily counts
+    result_data = {}
+    
+    print(f"Processing {len(sp500_tickers)} stocks...")
+    
+    # Process each ticker with a progress bar
+    for ticker in tqdm(sp500_tickers):
+        try:
+            # Get stock data
+            stock = yf.Ticker(ticker)
+            df = stock.history(period=period).reset_index()
+            
+            # Skip if not enough data
+            if len(df) < ma_days + 5:
+                continue
+                
+            # Calculate moving average
+            df = moving_avg(df, ma_days)
+            
+            # Determine if stock is above or below MA for each date
+            df["Above_MA"] = df["Close"] > df[f"SMA_{ma_days}"]
+            
+            # Iterate through each row after MA is calculated
+            for _, row in df[~df[f"SMA_{ma_days}"].isna()].iterrows():
+                date = row["Date"].strftime("%Y-%m-%d")
+                
+                # Initialize counter for this date if not exists
+                if date not in result_data:
+                    result_data[date] = {"above_ma": 0, "total": 0}
+                
+                # Update counters
+                result_data[date]["total"] += 1
+                if row["Above_MA"]:
+                    result_data[date]["above_ma"] += 1
+                    
+        except Exception as e:
+            print(f"Error processing {ticker}: {e}")
+    
+    # Convert results to DataFrame
+    dates = []
+    percentages = []
+    
+    for date, data in sorted(result_data.items()):
+        if data["total"] > 0:  # Avoid division by zero
+            percentage = (data["above_ma"] / data["total"]) * 100
+            dates.append(date)
+            percentages.append(percentage)
+    
+    result_df = pd.DataFrame({
+        "Date": pd.to_datetime(dates),
+        "Percentage_Above_MA": percentages
+    })
+    
+    result_df.set_index("Date", inplace=True)
+    result_df.sort_index(inplace=True)
+    
+    return result_df
+
+def plot_percentage_above_ma(result_df, ma_days=20, period="1y"):
+    """Plot the percentage of stocks above their moving average"""
+    plt.figure(figsize=(12, 6))
+    
+    # Plot the percentage line
+    plt.plot(result_df.index, result_df["Percentage_Above_MA"], linewidth=2)
+    
+    # Add horizontal lines at key levels
+    plt.axhline(y=90, color='r', linestyle='--', alpha=0.5)
+    # plt.axhline(y=20, color='g', linestyle='--', alpha=0.5)
+    # plt.axhline(y=50, color='k', linestyle='--', alpha=0.3)
+    
+    # Add labels and title
+    plt.title(f"Percentage of S&P 500 Stocks Above {ma_days}-Day Moving Average ({period})")
+    plt.ylabel("Percentage (%)")
+    plt.ylim(0, 100)
+    plt.grid(True, alpha=0.3)
+    
+    # Add text explaining reference lines
+    plt.text(result_df.index[0], 82, "Overbought (90%)", color='r')
+    # plt.text(result_df.index[0], 18, "Oversold (20%)", color='g')
+    
+    plt.tight_layout()
+    return plt
+
 def main():
     # Run the function for a list of tickers using multithreading
     # tickers = ["AAPL", "MSFT", "GOOGL", "TSLA"]
@@ -225,7 +329,7 @@ def main():
     # print(get_russell_2000())
     # print(golden_cross(tickers[0]))
     # print(stock_metadata(tickers[0]))
-    vix()
+    # vix()
     #db = Stocks_DB()
     #db.setup_database()
 
@@ -238,6 +342,23 @@ def main():
     # df.to_csv("stocks_db_snapshot.csv", index=False)
     #print(db.get_table_names())
     #db.db_close()
+
+    # result_df = calculate_stocks_above_ma()
+    
+    # # Print some statistics
+    # print("\nResults Summary:")
+    # print(f"Period analyzed: 1 year")
+    # print(f"Moving Average: 20 days")
+    # print(f"Date range: {result_df.index.min()} to {result_df.index.max()}")
+    # print(f"Current percentage above MA: {result_df['Percentage_Above_MA'].iloc[-1]:.2f}%")
+    # print(f"Average percentage above MA: {result_df['Percentage_Above_MA'].mean():.2f}%")
+    # print(f"Max percentage above MA: {result_df['Percentage_Above_MA'].max():.2f}%")
+    # print(f"Min percentage above MA: {result_df['Percentage_Above_MA'].min():.2f}%")
+    
+    # # Plot results
+    # plt = plot_percentage_above_ma(result_df)
+    # plt.show()
+    pass
 
 if __name__ == "__main__":
     main()
